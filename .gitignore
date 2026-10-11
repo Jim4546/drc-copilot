@@ -1,0 +1,9 @@
+# secrets — never commit
+.env
+
+# generated
+out/
+work/
+__pycache__/
+*.pyc
+.DS_Store
