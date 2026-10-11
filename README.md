@@ -4,6 +4,8 @@ AI-assisted triage of DRC (design-rule check) reports on the open-source SkyWate
 
 > **Status: working prototype (Oct 2026).** All numbers below come from measured runs (`tools/evaluate.py`).
 
+![DRC Copilot report](docs/demo.png)
+
 ## What it does
 
 A full-chip DRC run can report thousands of violations. DRC Copilot turns the raw report into a one-page triage:
@@ -28,6 +30,51 @@ tools/run_drc.sh work/bench.gds work/bench.lyrdb            # open-source SKY130
 /usr/bin/python3 run.py work/bench.lyrdb --no-llm                   # rule-only fallback
 /usr/bin/python3 tools/evaluate.py --lyrdb work/bench.lyrdb --truth work/bench_truth.json --run out/bench_glm.json
 ```
+
+## Second input: RTL simulation regression logs
+
+The same triage idea applied to verification: a nightly regression produces many failing runs; most of them are the
+same bug seen through different random seeds. `run_sim.py` reads Icarus Verilog logs from self-checking testbenches and
+
+1. **classifies** each run (pass / fail / compile error / timeout);
+2. **groups** failures by build and **first symptom** (the first signal that mismatched, plus context such as `op=1`)
+   — grouping by the full set of mismatching signals fragments one bug into several groups because it varies with the seed;
+3. **retrieves candidate RTL lines**: drivers of the failing signal, their `if` / `case` guards, one level of fan-in,
+   FSM next-state logic, or the lines around a compile error (compilers often report the line *after* the mistake);
+4. asks GLM for the **suspect line, hypothesis, fix and next debug step**, with a no-model baseline alongside.
+
+```bash
+brew install icarus-verilog
+/usr/bin/python3 tools/mutate_rtl.py                 # 4 small designs, 15 seeded bugs + clean builds, 6 seeds each
+/usr/bin/python3 run_sim.py work/sim/logs            # add --no-llm for the deterministic part only
+/usr/bin/python3 tools/evaluate_sim.py
+```
+
+**Results** (`examples/sim_eval.md`, glm-5.3-flash):
+
+| What | Result |
+|---|---|
+| Benchmark | counter, FIFO, 1011 sequence detector, ALU · 15 seeded bugs (off-by-one, wrong reset, missing update, wrong FSM transition, wrong operator, dropped carry, 2 syntax errors) + clean builds · 114 runs |
+| Regression sanity | clean runs flagged 0/24 · bugs caught 15/15 |
+| Grouping | 90 failing runs → 16 groups by first symptom (21 by full signal set; builds split: 1 vs 4) |
+| Candidate lines contain the bug | 16/16, 1–9 lines per group (mean 5.4) |
+| Top-1 bug line | **GLM 15/16** (functional 13/14, compile errors 2/2) · no-model baseline 7/16 (compile errors 0/2) |
+
+The one GLM miss was two timeouts in a row; that group falls back to the baseline line.
+Limitations: one bug per build, four small designs written for this benchmark; real regressions mix several bugs per
+build and much larger RTL, where retrieving the right lines is the hard part.
+
+## Demo
+
+```bash
+/usr/bin/python3 app.py          # then open http://127.0.0.1:8765
+```
+
+The page shows the triage of the latest run: headline numbers, the test chip, one row per rule group, and for the
+selected group a KLayout render of its **worst** marker (red, with a ruler showing the measured value), the measured vs
+required value, the retrieved SKY130 rule text and the GLM explanation. **Run live** rebuilds everything from scratch —
+new benchmark (seed / size of your choice) → official DRC deck → triage → snapshots → scoring — in about 5 s with the
+model off and ~1.5 min with GLM on. A static copy of the page can be built with `python3 -m drc_copilot.site`.
 
 ## Data and licences
 
